@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Conveyor Sorting Station – PLC Simulator</title>
+<style>
+:root{--bg:#e9ece8;--panel:#f7f8f5;--ink:#1d2a26;--mute:#5d6b66;--line:#c3cbc5;--belt:#3b4743;--ok:#1f8a4c;--warn:#c98a00;--bad:#c4322b;--a:#2f6fb5;--b:#8a4fb0;--c:#6d7a74;--sp:#c4322b;--pv:#1f6f8b;
+padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141a18;--panel:#1c2421;--ink:#e3ebe7;--mute:#92a29b;--line:#34423d;--belt:#0e1311;--ok:#4cc27f;--warn:#e0aa2e;--bad:#ef6b62;--a:#6aa6ec;--b:#b98ae0;--c:#98a7a0;--sp:#ef6b62;--pv:#5cc3e0;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#141a18;--panel:#1c2421;--ink:#e3ebe7;--mute:#92a29b;--line:#34423d;--belt:#0e1311;--ok:#4cc27f;--warn:#e0aa2e;--bad:#ef6b62;--a:#6aa6ec;--b:#b98ae0;--c:#98a7a0;--sp:#ef6b62;--pv:#5cc3e0;color-scheme:dark}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 "Bahnschrift","Segoe UI",system-ui,sans-serif;padding:16px}
+h1{font-size:20px;margin:0 0 2px;font-weight:600}.sub{color:var(--mute);margin:0 0 14px;max-width:70ch}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:14px;max-width:1180px;margin:auto}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.p{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px}
+.p h2{font-size:14px;margin:0 0 8px;font-weight:600}
+canvas{width:100%;display:block;border-radius:4px}
+.state{display:inline-block;padding:2px 10px;border-radius:3px;color:#fff;font-weight:600;background:var(--mute)}
+.btns{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+button{font:inherit;padding:8px 14px;border-radius:4px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid var(--a);outline-offset:2px}
+.go{background:var(--ok);color:#fff;border-color:var(--ok)}.stop{background:var(--ink);color:var(--bg)}.es{background:var(--bad);color:#fff;border-color:var(--bad);font-weight:700}
+label{display:flex;justify-content:space-between;gap:8px;align-items:center;margin:6px 0}
+input[type=number]{width:70px;font:inherit;padding:3px 5px;border:1px solid var(--line);border-radius:3px;background:var(--bg);color:var(--ink)}
+input[type=range]{width:100%}
+table{width:100%;border-collapse:collapse;font-size:13px}td{padding:2px 0}td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--line);margin-right:6px}.on{background:var(--ok)}
+.cnt{display:flex;gap:8px}.cnt div{flex:1;border:1px solid var(--line);border-radius:4px;padding:6px;text-align:center}.cnt b{display:block;font-size:22px}
+.msg{min-height:22px;color:var(--bad);font-weight:600;margin-top:6px}
+</style></head><body>
+<h1>Conveyor sorting station: PLC simulator</h1>
+<p class="sub">Runs the same logic as <code>sorting_station.st</code>: a state machine, a PID speed loop with anti-windup, a VFD ramp, and an overload fault. Sensors detect metal and height, and pushers divert parts into bins.</p>
+<div class="grid">
+<div>
+ <div class="p"><canvas id="line" width="900" height="250" role="img" aria-label="Top view of the conveyor line"></canvas>
+  <div class="btns">
+   <button class="go" id="bStart">Start</button><button class="stop" id="bStop">Stop</button>
+   <button class="es" id="bES">E-stop</button><button id="bReset">Reset</button>
+   <button id="bLoad" aria-pressed="false">Add overload</button>
+  </div>
+  <div class="msg" id="msg" aria-live="polite"></div>
+ </div>
+ <div class="p" style="margin-top:14px"><h2>Belt speed: setpoint vs measured (last 12 s)</h2><canvas id="trend" width="900" height="190" role="img" aria-label="Speed trend chart"></canvas></div>
+</div>
+<div>
+ <div class="p"><h2>Controller <span class="state" id="st">IDLE</span></h2>
+  <label>Speed setpoint (mm/s)<b id="spv">120</b></label><input type="range" id="sp" min="40" max="200" value="120" aria-label="Speed setpoint">
+  <label>Kp<input type="number" id="kp" value="0.4" step="0.1" min="0"></label>
+  <label>Ki<input type="number" id="ki" value="0.8" step="0.1" min="0"></label>
+  <label>Kd<input type="number" id="kd" value="0" step="0.05" min="0"></label>
+ </div>
+ <div class="p" style="margin-top:14px"><h2>Production count</h2>
+  <div class="cnt"><div><b id="cA">0</b>A metal</div><div><b id="cB">0</b>B tall</div><div><b id="cC">0</b>C short</div></div>
+  <p style="margin:8px 0 0;color:var(--mute)" id="mis">Mis-sorts: 0</p></div>
+ <div class="p" style="margin-top:14px"><h2>Live I/O</h2><table id="io"></table></div>
+</div></div>
+<script>
+const DT=0.02, $=id=>document.getElementById(id);
+const S={IDLE:0,RUN:1,STOPR:2,ESTOP:3,FAULT:4}, NAMES=["IDLE","RUN","STOP RAMP","E-STOP","FAULT"], COL=["#5d6b66","#1f8a4c","#c98a00","#c4322b","#c4322b"];
+let st=S.IDLE, ramp=0, v=0, integ=0, prevPV=0, dF=0, ctl=0, sat=false, errT=0, load=1, estop=false, startP=false, resetP=false;
+let items=[], spawnT=0, cnt={A:0,B:0,C:0}, mis=0, hist=[], t=0, pA=0, pB=0, metalSeen=false, hMM=0, msg="";
+const LEN=800, X_METAL=110, X_H=170, X_A=360, X_B=520, GAIN=2.5, TAU=0.8;
+
+$("bStart").onclick=()=>startP=true; $("bStop").onclick=()=>{if(st===S.RUN)st=S.STOPR};
+$("bES").onclick=()=>{estop=!estop;$("bES").textContent=estop?"E-stop (release)":"E-stop"};
+$("bReset").onclick=()=>resetP=true;
+$("bLoad").onclick=e=>{load=load===1?0.45:1;e.target.setAttribute("aria-pressed",load!==1);e.target.textContent=load===1?"Add overload":"Remove overload"};
+$("sp").oninput=e=>$("spv").textContent=e.target.value;
+
+function spawn(){const metal=Math.random()<0.33, tall=Math.random()<0.5;
+ items.push({x:0,y:0,metal,tall,h:tall?48:26,cls:null,gone:false,dst:null})}
+
+function scan(){
+ const sp=+$("sp").value, kp=+$("kp").value, ki=+$("ki").value, kd=+$("kd").value;
+ // state machine
+ if(estop) {st=S.ESTOP}
+ else if(st===S.ESTOP){ if(resetP) st=S.IDLE }
+ else if(st===S.FAULT){ if(resetP) st=S.IDLE }
+ else if(st===S.IDLE){ if(startP) st=S.RUN }
+ else if(st===S.STOPR){ if(ramp<1&&v<1) st=S.IDLE }
+ startP=false; resetP=false;
+ const run=st===S.RUN||st===S.STOPR;
+ // setpoint ramp (VFD acceleration limit 80 mm/s2)
+ const tgt=st===S.RUN?sp:0, step=80*DT;
+ ramp = tgt>ramp+step?ramp+step: tgt<ramp-step?ramp-step: tgt;
+ // PID with anti-windup, derivative on PV
+ if(run){ const e=ramp-v; dF=0.8*dF+0.2*(-(v-prevPV)/DT); prevPV=v;
+  const u=kp*e+integ+kd*dF;
+  if(u>100){ctl=100;sat=true}else if(u<0){ctl=0;sat=true}else{ctl=u;sat=false;integ+=ki*e*DT}
+ } else {integ=0;ctl=0;sat=false;prevPV=v}
+ // plant: VFD + motor + belt (first-order lag), load reduces gain
+ const vss=ctl*GAIN*load; v+=(vss-v)*DT/TAU; if(v<0)v=0;
+ // fault: speed error > 30 mm/s for 3 s
+ errT = (st===S.RUN&&Math.abs(ramp-v)>30)?errT+DT:0;
+ if(errT>3){st=S.FAULT;errT=0;msg="FAULT: speed error above 30 mm/s for 3 s (overload or jam). Remove the overload and press Reset."}
+ if(st===S.ESTOP)msg="E-STOP active. Release it and press Reset.";
+ else if(st!==S.FAULT)msg="";
+ // parts
+ if(st===S.RUN){spawnT+=DT; if(spawnT>1.5){spawnT=0;spawn()}}
+ metalSeen=false;hMM=0;
+ for(const it of items){ if(it.gone)continue;
+  const px=it.x; it.x+=v*DT;
+  if(it.cls===null&&px<X_H&&it.x>=X_H){ // classify at sensor station
+    it.cls = it.metal?"A": it.h>40?"B":"C"; }
+  if(Math.abs(it.x-X_METAL)<22&&it.metal)metalSeen=true;
+  if(Math.abs(it.x-X_H)<22)hMM=it.h;
+  // pushers fire on position (encoder-based, not time-based)
+  if(it.cls==="A"&&px<X_A&&it.x>=X_A){pA=0.35;it.dst="A"}
+  if(it.cls==="B"&&px<X_B&&it.x>=X_B){pB=0.35;it.dst="B"}
+  if(it.dst){ it.y+=Math.min(90,(it.y+260*DT))-it.y; if(it.y>=70){it.gone=true;cnt[it.dst]++;} }
+  else if(it.x>LEN+10){it.gone=true;cnt.C++; if(it.cls!=="C")mis++}
+ }
+ items=items.filter(i=>!i.gone);
+ pA=Math.max(0,pA-DT);pB=Math.max(0,pB-DT);
+ t+=DT; hist.push([t,ramp,v]); while(hist.length&&hist[0][0]<t-12)hist.shift();
+}
+
+const cv=$("line"),cx=cv.getContext("2d"),tv=$("trend"),tx=tv.getContext("2d");
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function draw(){
+ const W=900,sx=(W-60)/LEN,ox=30,by=100; cx.clearRect(0,0,W,250);
+ cx.font="12px sans-serif"; cx.fillStyle=css("--mute");
+ [["A metal",X_A,css("--a")],["B tall plastic",X_B,css("--b")]].forEach(([n,x,c])=>{
+  cx.fillStyle=c;cx.globalAlpha=.18;cx.fillRect(ox+x*sx-34,by+56,68,70);cx.globalAlpha=1;
+  cx.strokeStyle=c;cx.strokeRect(ox+x*sx-34,by+56,68,70);cx.fillStyle=css("--ink");cx.fillText(n,ox+x*sx-30,by+142)});
+ cx.fillStyle=css("--c");cx.globalAlpha=.18;cx.fillRect(ox+LEN*sx-20,by-20,50,100);cx.globalAlpha=1;
+ cx.strokeStyle=css("--c");cx.strokeRect(ox+LEN*sx-20,by-20,50,100);cx.fillStyle=css("--ink");cx.fillText("C short",ox+LEN*sx-18,by+96);
+ cx.fillStyle=css("--belt");cx.fillRect(ox,by,LEN*sx,56);
+ cx.strokeStyle="rgba(255,255,255,.18)";cx.lineWidth=2;cx.setLineDash([8,10]);cx.lineDashOffset=-(t*v*sx)%18;
+ cx.beginPath();cx.moveTo(ox,by+28);cx.lineTo(ox+LEN*sx,by+28);cx.stroke();cx.setLineDash([]);cx.lineWidth=1;
+ // sensors
+ cx.fillStyle=metalSeen?css("--ok"):css("--mute");cx.fillRect(ox+X_METAL*sx-8,by-26,16,18);cx.fillStyle=css("--ink");cx.fillText("Metal",ox+X_METAL*sx-16,by-32);
+ cx.fillStyle=hMM?css("--ok"):css("--mute");cx.fillRect(ox+X_H*sx-8,by-26,16,18);cx.fillText("Height",ox+X_H*sx-18,by-32);
+ // pushers
+ [[X_A,pA],[X_B,pB]].forEach(([x,p])=>{cx.fillStyle=p>0?css("--warn"):css("--mute");cx.fillRect(ox+x*sx-6,by-26,12,p>0?58:20)});
+ for(const it of items){const w=it.metal?26:24,h=it.h*0.7+8,x=ox+it.x*sx-w/2,y=by+14+it.y;
+  cx.fillStyle=it.metal?"#b0b8c0":it.tall?"#d8a24a":"#e7d6a2";cx.fillRect(x,y,w,Math.min(h,28));
+  cx.strokeStyle="#111";cx.strokeRect(x,y,w,Math.min(h,28));}
+ // trend
+ tx.clearRect(0,0,900,190);const g=css("--line");tx.strokeStyle=g;tx.fillStyle=css("--mute");tx.font="12px sans-serif";
+ for(let i=0;i<=4;i++){const y=10+i*40;tx.beginPath();tx.moveTo(40,y);tx.lineTo(890,y);tx.stroke();tx.fillText(String(200-i*50),6,y+4)}
+ const line=(k,c)=>{tx.strokeStyle=c;tx.lineWidth=2;tx.beginPath();hist.forEach((h,i)=>{const x=40+(h[0]-(t-12))/12*850,y=170-h[k]/200*160;i?tx.lineTo(x,y):tx.moveTo(x,y)});tx.stroke()};
+ line(1,css("--sp"));line(2,css("--pv"));tx.lineWidth=1;
+ tx.fillStyle=css("--sp");tx.fillText("setpoint (after ramp)",50,186);tx.fillStyle=css("--pv");tx.fillText("measured speed",200,186);
+ // panels
+ const s=$("st");s.textContent=NAMES[st];s.style.background=COL[st];
+ $("cA").textContent=cnt.A;$("cB").textContent=cnt.B;$("cC").textContent=cnt.C;$("mis").textContent="Mis-sorts: "+mis;$("msg").textContent=msg;
+ const rows=[["VFD run",st===1||st===2],["Metal sensor",metalSeen],["Height (mm)",hMM?hMM.toFixed(0):"0"],["Pusher A",pA>0],["Pusher B",pB>0],["Alarm",st>=3],["PID output (%)",ctl.toFixed(1)],["PID saturated",sat],["Speed (mm/s)",v.toFixed(1)]];
+ $("io").innerHTML=rows.map(([n,x])=>`<tr><td>${typeof x==="boolean"?`<span class="dot ${x?"on":""}"></span>`:""}${n}</td><td>${typeof x==="boolean"?(x?"1":"0"):x}</td></tr>`).join("");
+}
+let acc=0,last=performance.now();
+function loop(n){acc+=Math.min(.25,(n-last)/1000);last=n;while(acc>=DT){scan();acc-=DT}draw();requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+</script></body></html>
